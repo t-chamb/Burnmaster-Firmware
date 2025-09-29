@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Build outputs
+*.o
+*.bin
+*.elf
+*.map
+*.d
+*.tmp
+Output/
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# IDE and editor files
+*.emSession
+.vscode/
+.idea/
+
+# Logs and temporary files
+*.log
+*.txt~
+*.bak
+
+# SD card files
+update.bin
+
+# Test scripts and temporary files
+monitor.py
+monitor_auto.py
+test_serial.py
+monitor_uart.py
+
+# Documentation files from analysis
+flash_*.md
+*_implementation.md
+*_comparison_report.md
+F3C3_flash_fix_summary.txt
+IMPORTANT_USB_DEVICE_NOTE.txt
+# But keep the main refactoring summary
+!REFACTORING_SUMMARY.md
