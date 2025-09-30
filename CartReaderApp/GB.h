@@ -20,6 +20,7 @@ extern word lastByte;
 void TestMemGB(boolean bFast);
 void gbFlashScreen();
 void gbScreen();
+void cleanup_GB();
 
 // Helper functions for ROM operations
 uint32_t gb_get_rom_size_bytes(uint8_t romSize);

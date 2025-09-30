@@ -1,5 +1,7 @@
 #pragma onece
 
+#include "display_config.h"
+
 #define I2C1_SLAVE_ADDRESS7    0x78
 #define SSD1306_ADDR 0x3c
 #define MAX_COLUMN 128
@@ -59,6 +61,21 @@ void simple_progress_end(void);
 void display_message(uint8_t line, const char* message);
 void display_clear_line(uint8_t line);
 void display_error(const char* title, const char* error, uint8_t wait_for_button);
+
+// Scrolling display functionality
+void display_scroll_init(uint8_t start_line, uint8_t end_line);
+void display_scroll_add_line(const char* message);
+void display_scroll_clear(void);
+
+// Full screen management
+void display_save_screen(void);
+void display_restore_screen(void);
+void display_update_line(uint8_t line, const char* message);
+
+// ROM validation display
+void display_validation_start(void);
+void display_checksum_result(const char* calculated, const char* expected, uint8_t matches);
+void display_validation_complete(void);
 
 // Compatibility macros for easier migration
 #define PROGRESS_INIT(title, total) progress_begin(title, "Starting...")

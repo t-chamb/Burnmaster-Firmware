@@ -4,6 +4,7 @@
 #include <string.h>
 #include "Common.h"
 #include "Display.h"
+#include "DisplayBuffer.h"
 #include "Operate.h"
 #include "flashparam.h"
 #include "fatfs/ff.h"
@@ -11,6 +12,7 @@
 #include "GB.h"
 #include "soft_uart.h"
 #include "GB_Flash.h"
+#include "Database.h"
 
 // External functions from GB_Flash.c
 extern void writeByte_GB_WithPin(int myAddress, byte myData, enum write_pin pin);
@@ -227,6 +229,15 @@ void getCartInfo_GB()
     case 0x07:
       romBanks = 256;
       break;
+    case 0x52:
+      romBanks = 72;
+      break;
+    case 0x53:
+      romBanks = 80;
+      break;
+    case 0x54:
+      romBanks = 96;
+      break;
     default:
       romBanks = 2;
   }
@@ -271,6 +282,9 @@ void getCartInfo_GB()
   byte myByte = 0;
   byte myLength = 0;
 
+  // Clear romName buffer first
+  memset(romName, 0, sizeof(romName));
+
   for (int addr = 0x0134; addr <= 0x13C; addr++) {
     myByte = readByte_GB(addr);
     if (((myByte >= 48 && myByte <= 57) || (myByte >= 65 && myByte <= 122)) && myLength < 15) {
@@ -278,6 +292,9 @@ void getCartInfo_GB()
       myLength++;
     }
   }
+  
+  // Null terminate the string
+  romName[myLength] = '\0';
 }
 
 
@@ -401,6 +418,31 @@ void showCartInfo_GB()
 /******************************************
    Setup
  *****************************************/
+// Cleanup function to reset hardware state when exiting GB mode
+void cleanup_GB() {
+  soft_uart_send_string("GB: Cleaning up hardware state\r\n");
+  
+  // Reset all control pins to high (inactive)
+  gpio_bit_set(CTRL, RST|CS|WR|RD|CLK);
+  
+  // Set all pins back to input mode to avoid conflicts
+  // This prevents issues when switching carts
+  
+  // Address pins to input
+  gpio_init(ADDRLOW, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, BITS(4,15));
+  gpio_init(ADDRHIGH, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11);
+  
+  // Control pins to input (except RST which might be needed for detection)
+  gpio_init(CTRL, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_2MHZ, CS|WR|RD|CLK);
+  gpio_init(CTRL, GPIO_MODE_IPU, GPIO_OSPEED_2MHZ, RST);  // RST with pull-up
+  
+  // Data pins already set to input in setup_GB, but ensure they're floating
+  gpio_init(DATA, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, BITS(8,15));
+  
+  // Small delay to let hardware settle
+  delay(10);
+}
+
 void setup_GB() {
   
   // Set Address Pins to Output
@@ -463,8 +505,8 @@ void readROM_GB() {
   rst = f_chdir(folder);
 
   OledClear();
-  OledShowString(0,0,"Saving to ",8);
-  OledShowString(4,1,folder,8);
+  display_update_line(0, "Saving to ");
+  display_update_line(1, folder);
   //printf("/..."));
 
   // write new folder number back to eeprom
@@ -536,7 +578,8 @@ void readROM_GB() {
   // Close the file:
   f_close(&tfile);
   
-  progress_complete("ROM read complete");
+  // Don't use progress_complete here as it will interfere with validation display
+  soft_uart_send_string("GB: ROM read complete\r\n");
 }
 
 // Calculate checksum
@@ -607,14 +650,19 @@ uint16_t calc_checksum_GB (char* fileName, char* folder) {
 
 // Compare checksum
 boolean compare_checksum_GB() {
-  OledShowString(0,3,"Calculating Checksum",8);
+  OledShowString(0,3,"Calculating Csum",8);
 
   strcpy(fileName, romName);
   strcat(fileName, ".GB");
 
   // last used rom folder
   foldern = load_dword();
-  sprintf(folder, "GB/ROM/%s/%d", romName, foldern - 1);
+  // If foldern is 0, it means no ROMs have been saved yet
+  if (foldern > 0) {
+    sprintf(folder, "GB/ROM/%s/%d", romName, foldern - 1);
+  } else {
+    sprintf(folder, "GB/ROM/%s/0", romName);
+  }
 
   // Debug info
   char msg[128];
@@ -634,17 +682,54 @@ boolean compare_checksum_GB() {
   sprintf(msg, "GB Checksum: Calc=%04X, Expected=%04X\r\n", calcChecksum, expectedChecksum);
   soft_uart_send_string(msg);
 
+  // Keep existing display and add validation results with scrolling
+  soft_uart_send_string("Starting validation display with scrolling\r\n");
+  
+  // Initialize scrolling - this will capture current screen
+  display_validation_start();
+  
+  // Add validation results using scrolling
+  char line[64];
+  
+  display_scroll_add_line("== ROM Validation ===");
+  
+  sprintf(line, "Checksum: %s", calcsumStr);
+  display_scroll_add_line(line);
+  
   if (calcChecksum == expectedChecksum) {
-    OledShowString(0,4,"Result: ",8);
-    OledShowString(50,4,calcsumStr,8);
-    OledShowString(0,5,"Checksum matches",8);
-    return 1;
+    display_scroll_add_line("Checksum: PASS");
+  } else {
+    sprintf(line, "Expected: %s", expectedStr);
+    display_scroll_add_line(line);
+    display_scroll_add_line("Checksum: FAIL");
   }
-  else {
-    OledShowString(0,4,"Result: ",8);
-    OledShowString(50,4,calcsumStr,8);
-    OledShowString(0,5,"Expected: ",8);
-    OledShowString(60,5,expectedStr,8);
+  
+  // Flush checksum results before CRC calculation
+  DisplayBuffer_ForceUpdate();
+  
+  display_scroll_add_line("Calculating CRC:");
+  DisplayBuffer_ForceUpdate();
+  
+  // Run validations which will use scrolling display
+  compareCRC_GB("gb.txt", 0, false);
+  
+  display_scroll_add_line("Calculating MD5:");
+  DisplayBuffer_ForceUpdate();
+  
+  soft_uart_send_string("GB: Calling compareMD5_GB\r\n");
+  compareMD5_GB("gb_md5.txt", NULL, false);
+  
+  soft_uart_send_string("GB: Adding complete line\r\n");
+  display_scroll_add_line("===== Complete =====");
+  
+  soft_uart_send_string("GB: Calling display_validation_complete\r\n");
+  // Flush any remaining lines
+  display_validation_complete();
+  soft_uart_send_string("GB: Validation display complete\r\n");
+
+  if (calcChecksum == expectedChecksum) {
+    return 1;
+  } else {
     print_Error("Checksum Error", false);
     return 0;
   }
@@ -3045,6 +3130,7 @@ void gbScreen()
     uint8_t b = gbMenu();
     if(b>0) {
       soft_uart_send_string("GB Screen: Exiting\r\n");
+      cleanup_GB();  // Clean up hardware state before exiting
       break;
     }
   }

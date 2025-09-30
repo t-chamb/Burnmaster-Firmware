@@ -69,6 +69,7 @@
       <file file_name="main.h" />
       <file file_name="Display.c" />
       <file file_name="Display.h" />
+      <file file_name="display_config.h" />
       <file file_name="Operate.c" />
       <file file_name="Operate.h" />
       <file file_name="Common.c" />
@@ -88,6 +89,12 @@
       <file file_name="GBM.h" />
       <file file_name="soft_uart.c" />
       <file file_name="soft_uart.h" />
+      <file file_name="Database.c" />
+      <file file_name="Database.h" />
+      <file file_name="md5.c" />
+      <file file_name="md5.h" />
+      <file file_name="DisplayBuffer.c" />
+      <file file_name="DisplayBuffer.h" />
     </folder>
     <folder Name="System Files">
       <file file_name="SEGGER_THUMB_Startup.s" />

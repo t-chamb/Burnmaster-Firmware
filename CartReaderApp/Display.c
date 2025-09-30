@@ -2,9 +2,13 @@
 #include <gd32f10x.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "Common.h"
 #include "Display.h"
+#include "display_config.h"  // For OLED display constants
 #include "Operate.h"  // For WaitOKBtn
+#include "soft_uart.h"  // For debug output
+#include "DisplayBuffer.h"  // For buffered scrolling
 
 
 
@@ -822,8 +826,14 @@ void draw_progressbar(uint32_t processed, uint32_t total, uint8_t line) {
   static uint8_t previous = 0xFF;  // Force initial draw
   static uint32_t last_update_count = 0;
   uint8_t current;
-  uint8_t steps = 20;
-  char bar[22] = "[                  ]";  // 20 spaces + brackets
+  uint8_t steps = PROGRESS_BAR_WIDTH;  // Width minus brackets
+  char bar[OLED_CHAR_BUFFER];
+  
+  // Initialize progress bar with brackets
+  bar[0] = '[';
+  memset(bar + 1, ' ', PROGRESS_BAR_WIDTH);
+  bar[PROGRESS_BAR_WIDTH + 1] = ']';
+  bar[OLED_CHAR_WIDTH] = '\0';
   
   // Reset on new progress
   if (processed == 0) {
@@ -921,11 +931,10 @@ void LED_CLEAR(void)
 }
 
 // New unified progress display system
-#include <string.h>
 
 static struct {
-  char title[32];
-  char status[32];
+  char title[OLED_CHAR_BUFFER];
+  char status[OLED_CHAR_BUFFER];
   uint8_t active;
 } progress_state = {0};
 
@@ -933,12 +942,12 @@ void progress_begin(const char* title, const char* status) {
   // Simple clear like the menus do
   OledClear();
   
-  // Copy title and status
-  strncpy(progress_state.title, title, 31);
-  progress_state.title[31] = '\0';
+  // Copy title and status (limit to display width)
+  strncpy(progress_state.title, title, OLED_CHAR_WIDTH - 1);
+  progress_state.title[OLED_CHAR_WIDTH - 1] = '\0';
   if (status) {
-    strncpy(progress_state.status, status, 31);
-    progress_state.status[31] = '\0';
+    strncpy(progress_state.status, status, OLED_CHAR_WIDTH - 1);
+    progress_state.status[OLED_CHAR_WIDTH - 1] = '\0';
   } else {
     progress_state.status[0] = '\0';
   }
@@ -978,24 +987,24 @@ void progress_set_status(const char* status) {
   if (!progress_state.active) return;
   
   // Only update if status actually changed to reduce flicker
-  if (strncmp(progress_state.status, status, 31) == 0) {
+  if (strncmp(progress_state.status, status, OLED_CHAR_WIDTH - 1) == 0) {
     return; // Status unchanged, skip update
   }
   
   // Update status line
-  strncpy(progress_state.status, status, 31);
-  progress_state.status[31] = '\0';
+  strncpy(progress_state.status, status, OLED_CHAR_WIDTH - 1);
+  progress_state.status[OLED_CHAR_WIDTH - 1] = '\0';
   
   // Build padded string to avoid separate clear operation
-  char padded_status[22]; // 21 chars max for display + null (128 pixels / 6 pixels per char)
+  char padded_status[OLED_CHAR_BUFFER];
   int len = strlen(progress_state.status);
-  if (len > 21) len = 21;
+  if (len > OLED_CHAR_WIDTH - 1) len = OLED_CHAR_WIDTH - 1;
   memcpy(padded_status, progress_state.status, len);
   // Pad with spaces
-  for (int i = len; i < 21; i++) {
+  for (int i = len; i < OLED_CHAR_WIDTH; i++) {
     padded_status[i] = ' ';
   }
-  padded_status[21] = '\0';
+  padded_status[OLED_CHAR_WIDTH] = '\0';
   
   OledShowString(0, 1, padded_status, 8);
 }
@@ -1070,4 +1079,146 @@ void display_error(const char* title, const char* error, uint8_t wait_for_button
     OledShowString(0, 7, "Press OK...", 8);
     WaitOKBtn();
   }
+}
+
+// Screen buffer to track display contents
+static struct {
+  char lines[OLED_DISPLAY_LINES][OLED_CHAR_BUFFER];
+  uint8_t next_line;
+  uint8_t scroll_active;
+  char pending_lines[OLED_DISPLAY_LINES][OLED_CHAR_BUFFER];  // Buffer for pending lines
+  uint8_t pending_count;       // Number of pending lines
+  uint32_t last_update_time;   // For timing updates
+} screen_buffer = {0};
+
+// Save current screen content
+void display_save_screen(void) {
+  // In a real implementation, we'd read from the display
+  // For now, we track what we write
+  screen_buffer.scroll_active = 0;
+}
+
+// Restore saved screen
+void display_restore_screen(void) {
+  for (int i = 0; i < 8; i++) {
+    if (screen_buffer.lines[i][0] != '\0') {
+      OledShowString(0, i, screen_buffer.lines[i], 8);
+    }
+  }
+}
+
+// Update a specific line and save to buffer
+void display_update_line(uint8_t line, const char* message) {
+  if (line > 7) return;
+  
+  display_clear_line(line);
+  if (message && message[0]) {
+    strncpy(screen_buffer.lines[line], message, OLED_CHAR_WIDTH - 1);
+    screen_buffer.lines[line][OLED_CHAR_WIDTH - 1] = '\0';
+    OledShowString(0, line, message, 8);
+  } else {
+    screen_buffer.lines[line][0] = '\0';
+  }
+}
+
+// Scroll entire screen up by one line
+static void scroll_screen_up(void) {
+  // Shift buffer contents up
+  for (int i = 0; i < 7; i++) {
+    strncpy(screen_buffer.lines[i], screen_buffer.lines[i + 1], OLED_CHAR_WIDTH - 1);
+    screen_buffer.lines[i][OLED_CHAR_WIDTH - 1] = '\0';
+  }
+  screen_buffer.lines[7][0] = '\0';
+  
+  // Redraw entire screen
+  OledClear();
+  for (int i = 0; i < 8; i++) {
+    if (screen_buffer.lines[i][0] != '\0') {
+      OledShowString(0, i, screen_buffer.lines[i], 8);
+    }
+  }
+}
+
+// Flush pending lines to display with smooth scrolling
+static void flush_pending_lines(void) {
+  if (screen_buffer.pending_count == 0) return;
+  
+  soft_uart_send_string("Flushing pending lines to display\r\n");
+  
+  // Process all pending lines
+  for (int i = 0; i < screen_buffer.pending_count; i++) {
+    // Scroll screen up
+    scroll_screen_up();
+    
+    // Add the new line at line 7 (bottom)
+    display_update_line(7, screen_buffer.pending_lines[i]);
+    
+    // Small delay between lines to reduce flicker
+    for(volatile int j = 0; j < 50000; j++);
+  }
+  
+  // Clear pending buffer
+  screen_buffer.pending_count = 0;
+}
+
+// Add a line to the display, scrolling entire screen if needed
+void display_scroll_add_line(const char* message) {
+  // Use the DisplayBuffer module
+  DisplayBuffer_AddLine(message);
+}
+
+// Initialize scrolling (capture current screen state)
+void display_scroll_init(uint8_t start_line, uint8_t end_line) {
+  // Capture what's currently on screen by reading our buffer
+  // Reset next line counter
+  screen_buffer.next_line = 0;
+  screen_buffer.scroll_active = 0;
+}
+
+// Clear scroll buffer
+void display_scroll_clear(void) {
+  for (int i = 0; i < 8; i++) {
+    screen_buffer.lines[i][0] = '\0';
+  }
+  screen_buffer.next_line = 0;
+  screen_buffer.scroll_active = 0;
+  OledClear();
+}
+
+// ROM validation display functions
+void display_validation_start(void) {
+  // Initialize display buffer for scrolling validation output
+  // Clear screen to remove progress bar remnants
+  DisplayBuffer_InitEx(DISPLAY_MODE_SCROLL, 1);
+  
+  // Set threshold to 0 - manual control of when to flush
+  // We'll flush at natural points in the validation flow
+  DisplayBuffer_SetFlushThreshold(0);
+  
+  // Enable auto-scroll for validation output
+  DisplayBuffer_SetAutoScroll(1);
+}
+
+void display_checksum_result(const char* calculated, const char* expected, uint8_t matches) {
+  char resultLine[32];
+  
+  // Use scrolling display for checksum results
+  sprintf(resultLine, "Checksum: %s", calculated);
+  display_scroll_add_line(resultLine);
+  
+  if (matches) {
+    display_scroll_add_line("Checksum matches!");
+  } else {
+    sprintf(resultLine, "Expected: %s", expected);
+    display_scroll_add_line(resultLine);
+    display_scroll_add_line("Checksum mismatch!");
+  }
+}
+
+void display_validation_complete(void) {
+  // Force flush any remaining lines
+  DisplayBuffer_ForceUpdate();
+  
+  // Reset for next operation
+  screen_buffer.next_line = 0;
 }

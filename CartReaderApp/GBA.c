@@ -4,12 +4,14 @@
 #include <string.h>
 #include "Common.h"
 #include "Display.h"
+#include "DisplayBuffer.h"
 #include "Operate.h"
 #include "flashparam.h"
 #include "fatfs/ff.h"
 #include "GBA.h"
 #include "GB_Flash.h"
 #include "soft_uart.h"
+#include "Database.h"
 
 
 
@@ -405,10 +407,6 @@ void getCartInfo_GBA()
   }
   else 
   {
-    byte tb;
-    char tempStr[5] = {0};
-    FIL tf;
-    UINT rdt;
 
     // cart not in list
     cartSize = 0;
@@ -421,60 +419,20 @@ void getCartInfo_GBA()
     cartID[3] = (char)sdBuffer[0xAF];
     cartID[4] = 0x00;
 
-    f_chdir("/");
-    if (f_open(&tf,"gba.txt", FA_READ) == FR_OK) 
-    {
-      // Loop through file
-
-      while (f_eof(&tf) == false) 
-      {
-        // Read 4 bytes into String, do it one at a time so byte order doesn't get mixed up
-
-        if(f_read(&tf,tempStr,4,&rdt)!=FR_OK)
-        {
-          //
-          f_close(&tf);
-          break;
-        }
-
-        // Check if string is a match
-        if (strcmp(tempStr, cartID) == 0) 
-        {
-          // Skip the , in the file
-          f_lseek(&tf,f_tell(&tf) + 1);
-
-          // Read the next ascii character and subtract 48 to convert to decimal
-          f_read(&tf,&tb,1,&rdt);
-          cartSize = tb - 48;
-          f_read(&tf,&tb,1,&rdt);
-          // Remove leading 0 for single digit cart sizes
-          if (cartSize != 0) 
-          {
-            cartSize = cartSize * 10 + tb - 48;
-          }
-          else {
-            cartSize = tb - 48;
-          }
-
-          // Skip the , in the file
-          f_lseek(&tf,f_tell(&tf) + 1);
-          f_read(&tf,&tb,1,&rdt);
-
-          // Read the next ascii character and subtract 48 to convert to decimal
-          saveType = tb - 48;
-        }
-        // If no match, empty string, advance by 7 and try again
-        else 
-        {
-          f_lseek(&tf,f_tell(&tf) + 7);
-        }
-      }
-      // Close the file:
-      f_close(&tf);
-    }
-    else 
-    {
-      print_Error("GBA.txt missing", false);
+    // Use database lookup for cart info
+    uint8_t dbRomSize = 0;
+    uint8_t dbSaveType = 0;
+    
+    if (searchGBADatabase("gba.txt", cartID, &dbRomSize, &dbSaveType)) {
+      cartSize = dbRomSize;
+      saveType = dbSaveType;
+      soft_uart_send_string("GBA: Found in database - ");
+      char msg[50];
+      sprintf(msg, "Size: %dMB, Save: %d\r\n", cartSize, saveType);
+      soft_uart_send_string(msg);
+    } else {
+      soft_uart_send_string("GBA: Not found in database\r\n");
+      // cart not in list, already set to 0 above
     }
 
     // Get name
@@ -571,12 +529,17 @@ void readROM_GBA()
 
   // Close the file:
   f_close(&tf);
+  
+  // Check CRC32 database after ROM read
+  soft_uart_send_string("GBA: Checking CRC32 database\r\n");
+  compareCRC_GB("gba.txt", 0, false);
+  compareMD5_GB("gba_md5.txt", NULL, false);
 }
 
 // Calculate the checksum of the dumped rom
 boolean compare_checksum_GBA () 
 {
-  OledShowString(0,4,"Calculating Checksum",8);
+  OledShowString(0,4,"Calculating Csum",8);
 
   strcpy(fileName, romName);
   strcat(fileName, ".gba");
@@ -606,15 +569,46 @@ boolean compare_checksum_GBA ()
     // Turn into string
     sprintf(calcChecksumStr, "%02X", calcChecksum);
 
+    // Add validation results using scrolling display
+    display_validation_start();
+    
+    display_scroll_add_line("== ROM Validation ===");
+    
+    char line[64];
+    sprintf(line, "Checksum: %s", calcChecksumStr);
+    display_scroll_add_line(line);
+    
+    if (strcmp(calcChecksumStr, checksumStr) == 0) {
+      display_scroll_add_line("Checksum: PASS");
+    } else {
+      sprintf(line, "Expected: %s", checksumStr);
+      display_scroll_add_line(line);
+      display_scroll_add_line("Checksum: FAIL");
+    }
+    
+    // Flush checksum results
+    DisplayBuffer_ForceUpdate();
+    
+    // Run database validations
+    display_scroll_add_line("Calculating CRC:");
+    DisplayBuffer_ForceUpdate();
+    compareCRC_GB("gba.txt", 0, false);
+    
+    display_scroll_add_line("Calculating MD5:");
+    DisplayBuffer_ForceUpdate();
+    compareMD5_GB("gba_md5.txt", NULL, false);
+    
+    display_scroll_add_line("===== Complete =====");
+    
+    // Flush any remaining lines
+    display_validation_complete();
+    
     if (strcmp(calcChecksumStr, checksumStr) == 0) 
     {
-      OledShowString(0,5,"Checksum matches",8);
       return 1;
     }
     else 
     {
-      OledShowString(0,5,"Result: ",8);
-      OledShowString(50,5,calcChecksumStr,8);
       print_Error("Checksum Error", false);
       return 0;
     }
